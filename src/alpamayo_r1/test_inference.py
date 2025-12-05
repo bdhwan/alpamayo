@@ -73,5 +73,5 @@ print("minADE:", min_ade, "meters")
 print(
     "Note: VLA-reasoning models produce nondeterministic outputs due to trajectory sampling, "
     "hardware differences, etc. With num_traj_samples=1 (set for GPU memory compatibility), "
-    "variance in minADE is expected. For visual sanity checks, see notebooks/inference.ipynb."
+    "variance in minADE is expected. For visual sanity checks, see notebooks/inference.ipynb"
 )
