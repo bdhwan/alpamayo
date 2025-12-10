@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from PIL import Image
 
 
 class AlpamayoClient:
@@ -32,16 +33,19 @@ class AlpamayoClient:
         self,
         base_url: str = "http://localhost:8001",
         timeout: int = 300,
+        verbose: bool = False,
     ):
         """Initialize the client.
 
         Args:
             base_url: Base URL of the API server
             timeout: Request timeout in seconds
+            verbose: Whether to print verbose error messages
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.api_url = f"{self.base_url}/v1/chat/completions"
+        self.verbose = verbose
 
     def encode_image(self, image_path: str | Path) -> str:
         """Encode an image file to base64 data URL.
@@ -56,6 +60,17 @@ class AlpamayoClient:
         if not image_path.exists():
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
+        # Verify it's actually an image file before encoding
+        try:
+            with Image.open(image_path) as img:
+                img.verify()
+            # Reopen after verify (verify closes the image)
+            with Image.open(image_path) as img:
+                # Get actual format
+                actual_format = img.format
+        except Exception as e:
+            raise ValueError(f"Invalid or corrupted image file {image_path}: {str(e)}") from e
+
         # Determine image format from extension
         ext = image_path.suffix.lower()
         mime_types = {
@@ -69,8 +84,14 @@ class AlpamayoClient:
         mime_type = mime_types.get(ext, "image/jpeg")
 
         # Read and encode image
-        with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
+        try:
+            with open(image_path, "rb") as f:
+                image_bytes = f.read()
+            if len(image_bytes) == 0:
+                raise ValueError(f"Image file is empty: {image_path}")
+            image_data = base64.b64encode(image_bytes).decode("utf-8")
+        except Exception as e:
+            raise ValueError(f"Failed to read/encode image {image_path}: {str(e)}") from e
 
         return f"data:{mime_type};base64,{image_data}"
 
@@ -202,8 +223,28 @@ class AlpamayoClient:
             )
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.HTTPError as e:
+            # Extract detailed error message from response
+            error_detail = None
+            if hasattr(e.response, "text"):
+                try:
+                    error_response = e.response.json()
+                    error_detail = error_response.get("detail", error_response.get("message", str(e)))
+                except (ValueError, KeyError):
+                    error_detail = e.response.text or str(e)
+            else:
+                error_detail = str(e)
+
+            error_msg = f"API request failed with status {e.response.status_code}: {error_detail}"
+            if self.verbose:
+                error_msg += f"\nFull response: {e.response.text}"
+            raise RuntimeError(error_msg) from e
         except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"API request failed: {e}") from e
+            error_msg = f"API request failed: {e}"
+            if self.verbose:
+                error_msg += f"\nRequest URL: {self.api_url}"
+                error_msg += f"\nPayload keys: {list(payload.keys())}"
+            raise RuntimeError(error_msg) from e
 
     def health_check(self) -> dict[str, Any]:
         """Check if the API server is healthy.
@@ -320,11 +361,17 @@ Examples:
         action="store_true",
         help="Pretty print the JSON response",
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Print verbose error messages including full server response",
+    )
 
     args = parser.parse_args()
 
     # Initialize client
-    client = AlpamayoClient(base_url=args.api_url)
+    client = AlpamayoClient(base_url=args.api_url, verbose=args.verbose)
 
     # Check health
     try:
@@ -402,8 +449,19 @@ Examples:
                 json.dump(result, f, indent=2 if args.pretty else None)
             print(f"\n✓ Response saved to {args.output}")
 
+    except RuntimeError as e:
+        print(f"\n✗ API Error: {e}")
+        if args.verbose:
+            import traceback
+            print("\nFull traceback:")
+            traceback.print_exc()
+        return 1
     except Exception as e:
         print(f"\n✗ Error: {e}")
+        if args.verbose:
+            import traceback
+            print("\nFull traceback:")
+            traceback.print_exc()
         return 1
 
     return 0

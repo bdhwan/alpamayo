@@ -53,24 +53,64 @@ def extract_images_from_messages(messages: list[ChatMessage]) -> list[torch.Tens
                         image_url = content_item.image_url.url
 
                 if image_url:
-                    if image_url.startswith("data:image"):
-                        # Format: data:image/png;base64,<base64_data>
-                        base64_data = image_url.split(",", 1)[1]
-                    else:
-                        # Assume it's raw base64
-                        base64_data = image_url
+                    try:
+                        # Extract base64 data
+                        if image_url.startswith("data:image"):
+                            # Format: data:image/png;base64,<base64_data>
+                            if "," not in image_url:
+                                raise ValueError(
+                                    f"Invalid data URL format. Expected 'data:image/...;base64,<data>', "
+                                    f"got: {image_url[:100]}..."
+                                )
+                            base64_data = image_url.split(",", 1)[1]
+                        else:
+                            # Assume it's raw base64
+                            base64_data = image_url
 
-                    # Decode base64 to image
-                    image_bytes = base64.b64decode(base64_data)
-                    image = Image.open(io.BytesIO(image_bytes))
-                    # Convert to RGB if needed
-                    if image.mode != "RGB":
-                        image = image.convert("RGB")
+                        if not base64_data:
+                            raise ValueError("Empty base64 data")
 
-                    # Convert PIL Image to torch tensor (H, W, C) -> (C, H, W)
-                    image_array = np.array(image)
-                    image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).float()
-                    images.append(image_tensor)
+                        # Decode base64 to image
+                        try:
+                            image_bytes = base64.b64decode(base64_data, validate=True)
+                        except Exception as e:
+                            raise ValueError(
+                                f"Failed to decode base64 image data: {str(e)}. "
+                                f"Image URL prefix: {image_url[:50] if len(image_url) > 50 else image_url}, "
+                                f"Base64 data length: {len(base64_data)}"
+                            ) from e
+
+                        if len(image_bytes) == 0:
+                            raise ValueError("Decoded image bytes are empty")
+
+                        # Open image with PIL
+                        try:
+                            image = Image.open(io.BytesIO(image_bytes))
+                            # Verify image was loaded correctly
+                            image.verify()
+                            # Reopen after verify (verify closes the image)
+                            image = Image.open(io.BytesIO(image_bytes))
+                        except Exception as e:
+                            raise ValueError(
+                                f"Failed to open image: {str(e)}. "
+                                f"Image bytes length: {len(image_bytes)}, "
+                                f"First 20 bytes (hex): {image_bytes[:20].hex() if len(image_bytes) >= 20 else 'too short'}"
+                            ) from e
+
+                        # Convert to RGB if needed
+                        if image.mode != "RGB":
+                            image = image.convert("RGB")
+
+                        # Convert PIL Image to torch tensor (H, W, C) -> (C, H, W)
+                        image_array = np.array(image)
+                        if image_array.size == 0:
+                            raise ValueError("Image array is empty after conversion")
+                        image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).float()
+                        images.append(image_tensor)
+                    except Exception as e:
+                        raise ValueError(
+                            f"Error processing image from message (index {len(images)}): {str(e)}"
+                        ) from e
 
     return images
 
